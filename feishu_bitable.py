@@ -138,6 +138,68 @@ class FeishuBitable:
         except requests.exceptions.RequestException as e:
             raise Exception(f"HTTP请求异常: {str(e)}")
 
+    def batch_update_records(self, records):
+        """批量更新记录"""
+        url = f"{self.base_url}/bitable/v1/apps/{self.app_token}/tables/{self.table_id}/records/batch_update"
+        data = {
+            "records": records
+        }
+
+        print(f"批量更新 {len(records)} 条记录...")
+        response = requests.post(url, headers=self._get_headers(), json=data)
+        response_data = response.json()
+
+        if response_data.get("code") == 0:
+            print(f"批量更新成功: {len(records)} 条记录")
+            return response_data.get("data", {})
+        else:
+            raise Exception(f"批量更新记录失败: {response_data}")
+
+    def batch_update_records_by_code(self, code_records_dict, code_price_dict):
+        """按代号批量更新记录，自动处理大量记录的分批更新"""
+        total_updated = 0
+        total_failed = 0
+
+        print(f"\n开始批量更新，共{len(code_records_dict)}个代号需要更新")
+
+        for code, record_list in code_records_dict.items():
+            if code not in code_price_dict:
+                print(f"代号 {code} 没有价格数据，跳过")
+                continue
+
+            print(f"\n代号 {code}: 更新 {len(record_list)} 条记录")
+
+            # 准备批量更新的数据
+            batch_records = []
+            for record_info in record_list:
+                batch_records.append({
+                    "record_id": record_info["record_id"],
+                    "fields": {
+                        "last_price": code_price_dict[code]
+                    }
+                })
+
+            try:
+                # 执行批量更新
+                updated = self.batch_update_records(batch_records)
+                total_updated += len(record_list)
+                print(f"代号 {code} 的 {len(record_list)} 条记录批量更新成功")
+            except Exception as e:
+                print(f"代号 {code} 批量更新失败: {e}")
+                # 如果批量更新失败，尝试逐条更新
+                print(f"尝试逐条更新代号 {code} 的记录...")
+                for record_info in record_list:
+                    try:
+                        self.update_record(record_info["record_id"], {"last_price": code_price_dict[code]})
+                        total_updated += 1
+                        print(f"  记录 {record_info['record_id']} 更新成功")
+                    except Exception as single_e:
+                        total_failed += 1
+                        print(f"  记录 {record_info['record_id']} 更新失败: {single_e}")
+
+        print(f"\n批量更新完成: 成功 {total_updated} 条，失败 {total_failed} 条")
+        return total_updated, total_failed
+
     def delete_record(self, record_id):
         """删除记录"""
         url = f"{self.base_url}/bitable/v1/apps/{self.app_token}/tables/{self.table_id}/records/{record_id}"
@@ -371,24 +433,29 @@ if __name__ == "__main__":
         #     deleted = bitable.delete_record(record_id)
         #     print(f"删除记录成功: {deleted}")
 
-        # 循环遍历所有记录，更新每条记录的last_price字段
+        # 按代号分组记录，准备批量更新
+        code_records_dict = {}  # 代号 -> 记录列表的映射
+
         for record in records:
-            # 获取记录中的代号信息
-            print(record)
             if record.get("fields") and "代号" in record.get("fields"):
-                code_field = record.get("fields").get("代号")[0].get("text")
+                code_field = record.get("fields").get("代号")
                 record_id = record.get("record_id")
 
-                # 处理代号字段
-                code = code_field
+                # 处理代号字段（可能是列表）
+                if isinstance(code_field, list) and len(code_field) > 0:
+                    code = code_field[0].get("text")
+                else:
+                    continue
+
                 if code and isinstance(code, str) and code in code_price_dict:
-                    price = code_price_dict[code]
-                    print(price)
-                    try:
-                        updated = bitable.update_record(record_id, {"last_price": price})
-                        print(f"更新记录{record_id}的last_price为{price}成功")
-                    except Exception as e:
-                        print(f"更新记录{record_id}失败: {e}")
+                    if code not in code_records_dict:
+                        code_records_dict[code] = []
+                    code_records_dict[code].append({
+                        "record_id": record_id
+                    })
+
+        # 使用新的批量更新方法
+        total_updated, total_failed = bitable.batch_update_records_by_code(code_records_dict, code_price_dict)
 
     except Exception as e:
         print(f"发生错误: {e}")
