@@ -214,12 +214,117 @@ class FeishuBitable:
 
     def get_us_stock_price(self, ticker, exchange="XNAS"):
         """
-        根据代号获取美股最新价格
+        根据代号获取美股最新价格（支持单个或批量）
+
+        参数:
+            ticker: 股票代号，可以是单个字符串如"AAPL"，或者是列表如["AAPL", "GOOG", "META"]
+            exchange: 交易所代码，默认为"XNAS"（纳斯达克），也可以是"XNYS"（纽交所）
+                     注意：使用Alpha Vantage API时此参数不需要
+
+        返回:
+            如果ticker是单个字符串，返回float: 股票最新价格
+            如果ticker是列表，返回dict: {股票代号: 价格}的字典
+        """
+        # 如果ticker是列表，使用Twelve Data API批量处理
+        if isinstance(ticker, list):
+            result_dict = {}
+            print(f"\n开始批量获取美股价格，共{len(ticker)}只股票...")
+
+            # 使用Twelve Data API批量查询
+            # 按每批8个股票进行分批查询
+            twelve_data_key = "f13cb64f59874d58bf49dedce254e60a"
+            batch_size = 8
+
+            # 将ticker列表分批
+            for i in range(0, len(ticker), batch_size):
+                batch = ticker[i:i + batch_size]
+                batch_num = i // batch_size + 1
+                total_batches = (len(ticker) + batch_size - 1) // batch_size
+
+                print(f"\n第 {batch_num}/{total_batches} 批，共 {len(batch)} 只股票...")
+                symbols = ",".join(batch)
+
+                try:
+                    url = f"https://api.twelvedata.com/price?symbol={symbols}&apikey={twelve_data_key}"
+                    response = requests.get(url)
+                    response_data = response.json()
+
+                    print(f"request: {url}")
+                    print(f"response_data: {response_data}")
+
+                    # 检查是否遇到429错误（API额度用完）
+                    if isinstance(response_data, dict) and response_data.get('code') == 429:
+                        print(f"\n⚠️  API额度已用完: {response_data.get('message')}")
+                        print("等待60秒后重试...")
+                        time.sleep(60)
+
+                        # 重试一次
+                        print("正在重试...")
+                        response = requests.get(url)
+                        response_data = response.json()
+                        print(f"重试后 response_data: {response_data}")
+
+                        # 如果重试后还是429错误，则跳过本批
+                        if isinstance(response_data, dict) and response_data.get('code') == 429:
+                            print("重试后仍然失败，跳过本批")
+                            raise Exception("API额度限制，重试后仍失败")
+
+                    # 处理批量查询响应
+                    for code in batch:
+                        print(f"{code}", end="\t")
+                        try:
+                            # 如果只查询一个股票，响应格式不同
+                            if len(batch) == 1:
+                                if "price" in response_data and response_data.get("status") != "error":
+                                    price = float(response_data["price"])
+                                    print(f"  美股最新价格: ${price:.2f}")
+                                    result_dict[code] = price
+                                else:
+                                    print(f"  获取失败: {response_data.get('message', '未知错误')}")
+                            else:
+                                # 多个股票时，响应是一个字典，key是股票代号
+                                if code in response_data:
+                                    stock_data = response_data[code]
+                                    if "price" in stock_data and stock_data.get("status") != "error":
+                                        price = float(stock_data["price"])
+                                        print(f"  美股最新价格: ${price:.2f}")
+                                        result_dict[code] = price
+                                    else:
+                                        print(f"  获取失败: {stock_data.get('message', '未知错误')}")
+                                else:
+                                    print("  股票代号未返回数据")
+                        except Exception as e:
+                            print(f"  解析价格失败: {e}")
+
+                    # 批次之间添加小延迟，避免API限流
+                    if i + batch_size < len(ticker):
+                        time.sleep(0.5)
+
+                except Exception as e:
+                    print(f"\n第 {batch_num} 批使用Twelve Data API查询失败: {e}")
+                    print("降级为逐个查询本批股票...")
+                    # 如果批量查询失败，降级为逐个查询本批
+                    for code in batch:
+                        print(f"{code}", end="\t")
+                        stock_price = self._get_single_us_stock_price(code, exchange)
+                        if stock_price is not None:
+                            print(f"  美股最新价格: ${stock_price:.2f}")
+                            result_dict[code] = stock_price
+                        else:
+                            print("  获取美股价格失败")
+
+            return result_dict
+        else:
+            # 单个股票查询
+            return self._get_single_us_stock_price(ticker, exchange)
+
+    def _get_single_us_stock_price(self, ticker, exchange="XNAS"):
+        """
+        获取单个美股最新价格的内部方法
 
         参数:
             ticker: 股票代号，如"AAPL"
-            exchange: 交易所代码，默认为"XNAS"（纳斯达克），也可以是"XNYS"（纽交所）
-                     注意：使用Alpha Vantage API时此参数不需要
+            exchange: 交易所代码
 
         返回:
             float: 股票最新价格
@@ -269,7 +374,112 @@ class FeishuBitable:
 
     def get_china_fund_price(self, fund_code):
         """
-        根据代号获取A股基金的最新价格
+        根据代号获取A股基金的最新价格（支持单个或批量）
+
+        参数:
+            fund_code: 基金代码，可以是单个字符串如"161725"，或者是列表如["161725", "512710", "159599"]
+
+        返回:
+            如果fund_code是单个字符串，返回float: 基金最新单位净值
+            如果fund_code是列表，返回dict: {基金代码: 价格}的字典
+        """
+        # 如果fund_code是列表，使用腾讯股票API批量处理
+        if isinstance(fund_code, list):
+            result_dict = {}
+            print(f"\n开始批量获取中国基金价格，共{len(fund_code)}只基金...")
+
+            # 为每个代号添加市场前缀（sh或sz）
+            # 上证：代码以5、6开头，深证：代码以0、1、2、3开头
+            prefixed_codes = []
+            code_mapping = {}  # 映射关系：带前缀的代号 -> 原始代号
+
+            for code in fund_code:
+                if code.startswith('6') or code.startswith('5'):
+                    # 上证
+                    prefixed = f"sh{code}"
+                elif code.startswith('0') or code.startswith('1') or code.startswith('2') or code.startswith('3'):
+                    # 深证
+                    prefixed = f"sz{code}"
+                else:
+                    # 默认深证
+                    prefixed = f"sz{code}"
+
+                prefixed_codes.append(prefixed)
+                code_mapping[prefixed] = code
+
+            # 使用腾讯股票API批量查询
+            # API格式: http://qt.gtimg.cn/q=sh600000,sz000001
+            symbols = ",".join(prefixed_codes)
+
+            try:
+                url = f"http://qt.gtimg.cn/q={symbols}"
+                headers = {
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+                }
+                response = requests.get(url, headers=headers)
+                response.encoding = 'gbk'  # 腾讯API返回的是GBK编码
+
+                print(f"request: {url}")
+
+                # 解析返回数据
+                # 格式: v_sh600000="51~贵州茅台~600000~2580.00~2598.00~...";
+                lines = response.text.strip().split('\n')
+
+                for line in lines:
+                    if '~' not in line:
+                        continue
+
+                    # 提取股票代码和数据
+                    match_start = line.find('v_')
+                    match_equal = line.find('="')
+                    if match_start == -1 or match_equal == -1:
+                        continue
+
+                    prefixed_code = line[match_start + 2:match_equal]
+                    data_str = line[match_equal + 2:line.rfind('"')]
+                    parts = data_str.split('~')
+
+                    if len(parts) > 3:
+                        original_code = code_mapping.get(prefixed_code)
+                        if original_code:
+                            print(f"{original_code}", end="\t")
+                            try:
+                                # 第3个字段是当前价格
+                                price = float(parts[3])
+                                if price > 0:
+                                    print(f"  A股基金最新净值: ¥{price:.4f}")
+                                    result_dict[original_code] = price
+                                else:
+                                    print("  价格为0，可能停牌")
+                            except (ValueError, IndexError) as e:
+                                print(f"  解析价格失败: {e}")
+
+                # 检查是否有代号没有获取到价格
+                for code in fund_code:
+                    if code not in result_dict:
+                        print(f"{code}\t  获取A股基金价格失败")
+
+            except Exception as e:
+                print(f"\n使用腾讯股票API批量查询失败: {e}")
+                print("降级为逐个查询...")
+                # 如果批量查询失败，降级为逐个查询
+                for code in fund_code:
+                    print(f"{code}", end="\t")
+                    fund_price = self._get_single_china_fund_price(code)
+                    if fund_price is not None:
+                        print(f"  A股基金最新净值: ¥{fund_price:.4f}")
+                        result_dict[code] = fund_price
+                    else:
+                        print("  获取A股基金价格失败")
+
+            return result_dict
+        else:
+            # 单个基金查询
+            return self._get_single_china_fund_price(fund_code)
+
+    def _get_single_china_fund_price(self, fund_code):
+        """
+        获取单个A股基金最新价格的内部方法
 
         参数:
             fund_code: 基金代码，如"161725"（招商中证白酒指数）
@@ -383,27 +593,23 @@ if __name__ == "__main__":
         # code_price_dict = {'BBAI': 7.22, 'SMH': 325.34, 'PSTV': 0.6973, 'RXRX': 5.32, 'SOUN': 17.36, '159599': 2.19, '588780': 1.622, 'AIQ': 48.93, 'ADEA': 15.71, '512710': 0.736, 'BIDU': 121.69, '561910': 0.799, '588200': 2.527, 'AMZN': 216.37, 'META': 705.3, 'BABA': 159.01, 'JD': 31.85, '588720': 1.481, 'GOOG': 237.49, '512160': 1.448, '161903': 1.431, 'APP': 569.89, 'TCEHY': 79.96, '110003': 2.0998, '588790': 0.843, 'VGT': 736.33}
 
         print(f"去重后的代号数量: {len(unique_codes)}")
-        print("去重后的代号列表:")
-        for code in unique_codes:
-            # continue
-            print(code, end="\t")
-            # 根据代号是否为数字来决定调用哪个函数获取价格
-            if code and code.isdigit():
-                # 如果代号是数字，调用get_china_fund_price获取A股基金价格
-                fund_price = bitable.get_china_fund_price(code)
-                if fund_price is not None:
-                    print(f"  A股基金最新净值: ¥{fund_price:.4f}")
-                    code_price_dict[code] = fund_price
-                else:
-                    print("  获取A股基金价格失败")
-            else:
-                # 如果代号不是数字，调用get_us_stock_price获取美股价格
-                stock_price = bitable.get_us_stock_price(code)
-                if stock_price is not None:
-                    print(f"  美股最新价格: ${stock_price:.2f}")
-                    code_price_dict[code] = stock_price
-                else:
-                    print("  获取美股价格失败")
+
+        # 将代号分成两批：中国基金（纯数字）和美股（非纯数字）
+        china_fund_codes = [code for code in unique_codes if code and code.isdigit()]
+        us_stock_codes = [code for code in unique_codes if code and not code.isdigit()]
+
+        print(f"中国基金代号数量: {len(china_fund_codes)}")
+        print(f"美股代号数量: {len(us_stock_codes)}")
+
+        # 批量获取中国基金价格（直接传入列表）
+        if china_fund_codes:
+            china_prices = bitable.get_china_fund_price(china_fund_codes)
+            code_price_dict.update(china_prices)
+
+        # 批量获取美股价格（直接传入列表）
+        if us_stock_codes:
+            us_prices = bitable.get_us_stock_price(us_stock_codes)
+            code_price_dict.update(us_prices)
 
         # 打印字典内容以供验证
         print("代号价格字典:")
