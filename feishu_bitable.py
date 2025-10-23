@@ -237,6 +237,7 @@ class FeishuBitable:
                     # 获取最新价格 (05. price字段)
                     latest_price = float(quote.get("05. price", 0))
                     if latest_price > 0:
+                        time.sleep(1.5)
                         return latest_price
                     else:
                         print(f"Alpha Vantage返回的价格无效: {response_data}")
